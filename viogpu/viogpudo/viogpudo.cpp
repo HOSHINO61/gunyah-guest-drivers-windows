@@ -35,6 +35,14 @@
 #include "viogpum.h"
 #include "edid.h"
 
+// virtio-gpu has no real vsync, but Windows still needs a concrete refresh rate
+// in D3DKMDT_VIDEO_SIGNAL_INFO to build its display model. Reporting
+// D3DKMDT_FREQUENCY_NOTSPECIFIED makes the "Active signal mode" show as unknown,
+// collapses the refresh rate selector and keeps the desktop compositor at 60 Hz.
+// This value only drives that model, not the actual presentation cadence, which
+// is decided by the host (crosvm --simplefb poll-hz / --gpu refresh-rate).
+#define VIOGPU_REPORTED_REFRESH_HZ 120
+
 #if !DBG
 #include "viogpudo.tmh"
 #endif
@@ -891,11 +899,17 @@ VOID VioGpuDod::BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *pVideoSignalInfo
     pVideoSignalInfo->TotalSize.cx = pModeInfo->VisScreenWidth;
     pVideoSignalInfo->TotalSize.cy = pModeInfo->VisScreenHeight;
 
-    pVideoSignalInfo->VSyncFreq.Numerator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
-    pVideoSignalInfo->VSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
-    pVideoSignalInfo->HSyncFreq.Numerator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
-    pVideoSignalInfo->HSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
-    pVideoSignalInfo->PixelRate = D3DKMDT_FREQUENCY_NOTSPECIFIED;
+    // TotalSize is set equal to the active area, so there is no blanking interval
+    // to account for: pixel rate, horizontal sync and vertical sync follow
+    // directly from the active geometry at the reported refresh rate.
+    ULONG RefreshHz = VIOGPU_REPORTED_REFRESH_HZ;
+    SIZE_T TotalPixels = (SIZE_T)pVideoSignalInfo->TotalSize.cx * pVideoSignalInfo->TotalSize.cy;
+
+    pVideoSignalInfo->VSyncFreq.Numerator = RefreshHz;
+    pVideoSignalInfo->VSyncFreq.Denominator = 1;
+    pVideoSignalInfo->HSyncFreq.Numerator = (SIZE_T)RefreshHz * pVideoSignalInfo->TotalSize.cy;
+    pVideoSignalInfo->HSyncFreq.Denominator = 1;
+    pVideoSignalInfo->PixelRate = TotalPixels * RefreshHz;
     pVideoSignalInfo->ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE;
 }
 
