@@ -899,6 +899,15 @@ VOID VioGpuDod::BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *pVideoSignalInfo
     pVideoSignalInfo->TotalSize.cx = pModeInfo->VisScreenWidth;
     pVideoSignalInfo->TotalSize.cy = pModeInfo->VisScreenHeight;
 
+    // ActiveSize must describe the same geometry as TotalSize. Leaving it at zero
+    // (AddSingleTargetMode copies TotalSize into it before this function fills it
+    // in, and the monitor-source-mode paths never touch it at all) makes the
+    // signal info internally inconsistent. That is tolerated while every field is
+    // D3DKMDT_FREQUENCY_NOTSPECIFIED, but as soon as a concrete refresh rate and
+    // pixel rate are reported Windows rejects the VidPN commit and
+    // SetDisplayConfig fails with "these display settings could not be saved".
+    pVideoSignalInfo->ActiveSize = pVideoSignalInfo->TotalSize;
+
     // TotalSize is set equal to the active area, so there is no blanking interval
     // to account for: pixel rate, horizontal sync and vertical sync follow
     // directly from the active geometry at the reported refresh rate.
