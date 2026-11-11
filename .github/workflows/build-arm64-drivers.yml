@@ -117,7 +117,8 @@ jobs:
             @{ p='viofs/pci/viofs.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='viofs/svc/virtiofs.vcxproj';              c='Win11 Release'; plat='ARM64' },
             @{ p='rdmapool/rdmapool.vcxproj';               c='Release';       plat='ARM64' },
-            @{ p='pvmpower/pvmpower.vcxproj';               c='Release';       plat='ARM64' }
+            @{ p='pvmpower/pvmpower.vcxproj';               c='Release';       plat='ARM64' },
+            @{ p='viogpu/viogpudo/viogpudo.vcxproj';        c='Win11 Release'; plat='ARM64' }
           )
           $failed = @()
           foreach ($j in $jobs) {
@@ -184,7 +185,8 @@ jobs:
             @{ n='viosnd';    root='viosnd';    bins=@('viosnd.sys');   inf='viosnd.inf' },
             @{ n='viofs';     root='viofs';     bins=@('viofs.sys','virtiofs.exe'); inf='viofs.inf' },
             @{ n='rdmapool';  root='rdmapool';  bins=@('rdmapool.sys'); inf='rdmapool.inf' },
-            @{ n='pvmpower';  root='pvmpower';  bins=@('pvmpower.sys'); inf='pvmpower.inf' }
+            @{ n='pvmpower';  root='pvmpower';  bins=@('pvmpower.sys'); inf='pvmpower.inf' },
+            @{ n='viogpu';    root='viogpu';    bins=@('viogpudo.sys'); inf='viogpudo.inf' }
           )
           # 在 root 下找最佳檔案：優先路徑含 ARM64、最新修改
           function Pick($root,$file) {
