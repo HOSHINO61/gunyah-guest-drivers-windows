@@ -3329,11 +3329,26 @@ int VioGpuAdapter::AddEdidModes(void)
         PEDID_DETAILED_DESCRIPTOR detailed_desc = edid_data->EDIDDetailedTimings;
         for (int i = 0; i < 4; i++, detailed_desc++)
         {
-            if (detailed_desc->PixelClock == 0)
+            if (detailed_desc->PixelClock != 0)
+            {
+                // A real Detailed Timing Descriptor, not a display descriptor. The host's
+                // virtual EDID advertises the scanout's own geometry here, and none of the
+                // older timing blocks can express it, so take the resolution straight out of
+                // the DTD or the display falls back to 1024x768.
+                USHORT h_active = (USHORT)(detailed_desc->HorizontalActiveLow |
+                                           ((USHORT)detailed_desc->horizontalActiveHigh << 8));
+                USHORT v_active = (USHORT)(detailed_desc->VerticalActiveLow |
+                                           ((USHORT)detailed_desc->verticalActiveHigh << 8));
+                DbgPrint(TRACE_LEVEL_INFORMATION,
+                         (" Detailed timing: %dx%d\n", h_active, v_active));
+                if (h_active > 0 && v_active > 0)
+                {
+                    UpdateModes(h_active, v_active, modecount);
+                }
+                continue;
+            }
             {
                 PEDID_DISPLAY_DESCRIPTOR disp = (PEDID_DISPLAY_DESCRIPTOR)detailed_desc;
-                if (disp->Tag[3] == 0xF7 && disp->Revision == 0xA)
-                {
                     PESTABLISHED_TIMINGS_3 est_timing_3 = (PESTABLISHED_TIMINGS_3)disp->Data;
                     if (est_timing_3->Timing_640x350_85)
                     {
