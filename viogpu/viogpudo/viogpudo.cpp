@@ -444,10 +444,17 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
         // then the target stays "not active", which is exactly the state the second
         // display sits in. AlwaysConnected reports the truth and needs no event.
         pChildRelations[ChildIndex].ChildCapabilities.HpdAwareness = HpdAwarenessAlwaysConnected;
-        // INTERNAL (a built-in panel) rather than HD15 (an external VGA connector).
-        // Windows treats an internal output as the panel it must light up, instead of
-        // an empty external port that may legitimately stay dark.
-        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology = D3DKMDT_VOT_INTERNAL;
+        // HD15 (wired VGA) rather than INTERNAL (a built-in panel).
+        //
+        // Reported as INTERNAL, Windows classifies this output as the machine's
+        // built-in panel and the GPU display shows up as "显示器 1（内部）" next to
+        // the wired SimpleFB output. In that role it never reaches an active state
+        // here: the desktop stays on the SimpleFB adapter and CommitVidPn for an
+        // extend topology is rejected, so the scanout is committed but never drawn
+        // into. Declaring a wired external output instead puts the two displays on
+        // equal footing (both "有线"), which is the topology Windows knows how to
+        // extend into.
+        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology = D3DKMDT_VOT_HD15;
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.MonitorOrientationAwareness = D3DKMDT_MOA_NONE;
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.SupportsSdtvModes = FALSE;
         pChildRelations[ChildIndex].AcpiUid = 0;
