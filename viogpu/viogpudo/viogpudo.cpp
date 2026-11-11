@@ -240,6 +240,13 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     *pNumberOfViews = MAX_VIEWS;
     *pNumberOfChildren = MAX_CHILDREN;
     m_Flags.DriverStarted = TRUE;
+
+    // Announce the output as connected right away. The only other call site is
+    // ConfigChanged(), which fires when the host pushes VIRTIO_GPU_EVENT_DISPLAY;
+    // on a VM whose host never sends that event the child status is never reported
+    // and Windows keeps the target inactive.
+    m_pHWDevice->UpdateChildStatus(TRUE);
+
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return STATUS_SUCCESS;
 }
@@ -381,10 +388,17 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
     for (UINT ChildIndex = 0; ChildIndex < ChildRelationsCount; ++ChildIndex)
     {
         pChildRelations[ChildIndex].ChildDeviceType = TypeVideoOutput;
-        pChildRelations[ChildIndex].ChildCapabilities.HpdAwareness = IsVgaDevice() ? HpdAwarenessAlwaysConnected
-                                                                                   : HpdAwarenessInterruptible;
-        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology = IsVgaDevice() ? D3DKMDT_VOT_INTERNAL
-                                                                                                           : D3DKMDT_VOT_HD15;
+        // A virtual display has no hot-plug connector: it is wired to the host for the
+        // whole lifetime of the VM. Reporting HpdAwarenessInterruptible makes Windows
+        // wait for a DxgkCbIndicateChildStatus() that the driver only sends from
+        // ConfigChanged(), i.e. when the host happens to push a display event. Until
+        // then the target stays "not active", which is exactly the state the second
+        // display sits in. AlwaysConnected reports the truth and needs no event.
+        pChildRelations[ChildIndex].ChildCapabilities.HpdAwareness = HpdAwarenessAlwaysConnected;
+        // INTERNAL (a built-in panel) rather than HD15 (an external VGA connector).
+        // Windows treats an internal output as the panel it must light up, instead of
+        // an empty external port that may legitimately stay dark.
+        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology = D3DKMDT_VOT_INTERNAL;
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.MonitorOrientationAwareness = D3DKMDT_MOA_NONE;
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.SupportsSdtvModes = FALSE;
         pChildRelations[ChildIndex].AcpiUid = 0;
