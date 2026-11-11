@@ -937,7 +937,15 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
 
     for (UINT ModeIndex = 0; ModeIndex < m_pHWDevice->GetModeCount(); ++ModeIndex)
     {
-        PVIDEO_MODE_INFORMATION pModeInfo = m_pHWDevice->GetModeInfo(SourceId);
+        // GetModeInfo() indexes the flat mode table, not the video present source.
+        // Passing SourceId here made every iteration return m_ModeInfo[SourceId],
+        // so the target mode set for a source collapsed to a single arbitrary mode
+        // (the rest were rejected as STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET).
+        // With one display the source id is 0 and that single mode happened to be
+        // the one in use, which is why this only shows up with a second display:
+        // extend / second-screen-only then fail to commit with "these display
+        // settings could not be saved".
+        PVIDEO_MODE_INFORMATION pModeInfo = m_pHWDevice->GetModeInfo(ModeIndex);
         pVidPnTargetModeInfo = NULL;
         Status = pVidPnTargetModeSetInterface->pfnCreateNewModeInfo(hVidPnTargetModeSet, &pVidPnTargetModeInfo);
         if (!NT_SUCCESS(Status))
