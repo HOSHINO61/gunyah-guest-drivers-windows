@@ -39,9 +39,54 @@
 // in D3DKMDT_VIDEO_SIGNAL_INFO to build its display model. Reporting
 // D3DKMDT_FREQUENCY_NOTSPECIFIED makes the "Active signal mode" show as unknown,
 // collapses the refresh rate selector and keeps the desktop compositor at 60 Hz.
-// This value only drives that model, not the actual presentation cadence, which
-// is decided by the host (crosvm --simplefb poll-hz / --gpu refresh-rate).
-#define VIOGPU_REPORTED_REFRESH_HZ 120
+//
+// The value has to be one an EDID detailed timing descriptor can actually
+// express. A DTD stores the pixel clock in 16 bits of 10 kHz units, so 655.35 MHz
+// is the ceiling; 3392x2400 at 120 Hz needs about 1.14 GHz and truncates, and a
+// truncated DTD contradicts itself. Windows validates the monitor descriptor,
+// discards it when it does not add up ("NOEDID"), ends up with no monitor modes
+// and never activates the output - which is exactly the black second display.
+#define VIOGPU_REPORTED_REFRESH_HZ 60
+
+// CVT-ish blanking with the horizontal blank 8-pixel aligned. The same numbers
+// feed both the DTD and D3DKMDT_VIDEO_SIGNAL_INFO so the two descriptions of the
+// same mode agree instead of describing two different signals.
+static VOID ComputeVioGpuTimings(USHORT Width,
+                                 USHORT Height,
+                                 UINT RefreshHz,
+                                 USHORT *pTotalWidth,
+                                 USHORT *pTotalHeight,
+                                 ULONG *pPixelClock10kHz)
+{
+    ULONG HBlank = ((ULONG)Width * 15) / 100;
+    HBlank = (HBlank + 7) & ~7UL;
+    if (HBlank < 160)
+    {
+        HBlank = 160;
+    }
+    const ULONG VBlank = 30;
+
+    ULONG HTotal = (ULONG)Width + HBlank;
+    ULONG VTotal = (ULONG)Height + VBlank;
+    if (HTotal > 4095)
+    {
+        HTotal = 4095;
+    }
+    if (VTotal > 4095)
+    {
+        VTotal = 4095;
+    }
+
+    ULONG PixelClock = (ULONG)(((ULONGLONG)HTotal * VTotal * RefreshHz) / 10000ULL);
+    if (PixelClock > 65535)
+    {
+        PixelClock = 65535;
+    }
+
+    *pTotalWidth = (USHORT)HTotal;
+    *pTotalHeight = (USHORT)VTotal;
+    *pPixelClock10kHz = PixelClock;
+}
 
 #if !DBG
 #include "viogpudo.tmh"
@@ -909,30 +954,35 @@ VOID VioGpuDod::BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *pVideoSignalInfo
 {
     PAGED_CODE();
 
+    USHORT TotalWidth = 0;
+    USHORT TotalHeight = 0;
+    ULONG PixelClock10kHz = 0;
+    const UINT RefreshHz = VIOGPU_REPORTED_REFRESH_HZ;
+    ComputeVioGpuTimings(pModeInfo->VisScreenWidth,
+                         pModeInfo->VisScreenHeight,
+                         RefreshHz,
+                         &TotalWidth,
+                         &TotalHeight,
+                         &PixelClock10kHz);
+
     pVideoSignalInfo->VideoStandard = D3DKMDT_VSS_OTHER;
-    pVideoSignalInfo->TotalSize.cx = pModeInfo->VisScreenWidth;
-    pVideoSignalInfo->TotalSize.cy = pModeInfo->VisScreenHeight;
 
-    // ActiveSize must describe the same geometry as TotalSize. Leaving it at zero
-    // (AddSingleTargetMode copies TotalSize into it before this function fills it
-    // in, and the monitor-source-mode paths never touch it at all) makes the
-    // signal info internally inconsistent. That is tolerated while every field is
-    // D3DKMDT_FREQUENCY_NOTSPECIFIED, but as soon as a concrete refresh rate and
-    // pixel rate are reported Windows rejects the VidPN commit and
-    // SetDisplayConfig fails with "these display settings could not be saved".
-    pVideoSignalInfo->ActiveSize = pVideoSignalInfo->TotalSize;
+    // ActiveSize and TotalSize describe the same signal as the EDID's detailed
+    // timing: TotalSize carries the blanking the host really scans out, ActiveSize
+    // the visible part. Leaving ActiveSize at zero (or equal to TotalSize with
+    // blanking folded in) makes a concrete refresh rate impossible to reconcile.
+    pVideoSignalInfo->TotalSize.cx = TotalWidth;
+    pVideoSignalInfo->TotalSize.cy = TotalHeight;
+    pVideoSignalInfo->ActiveSize.cx = pModeInfo->VisScreenWidth;
+    pVideoSignalInfo->ActiveSize.cy = pModeInfo->VisScreenHeight;
 
-    // TotalSize is set equal to the active area, so there is no blanking interval
-    // to account for: pixel rate, horizontal sync and vertical sync follow
-    // directly from the active geometry at the reported refresh rate.
-    ULONG RefreshHz = VIOGPU_REPORTED_REFRESH_HZ;
-    SIZE_T TotalPixels = (SIZE_T)pVideoSignalInfo->TotalSize.cx * pVideoSignalInfo->TotalSize.cy;
-
+    // Pixel rate and both sync frequencies are exact multiples of the geometry
+    // above, so Windows can validate the triple the way it validates a real EDID.
+    pVideoSignalInfo->PixelRate = (SIZE_T)TotalWidth * TotalHeight * RefreshHz;
+    pVideoSignalInfo->HSyncFreq.Numerator = (SIZE_T)TotalWidth * RefreshHz;
+    pVideoSignalInfo->HSyncFreq.Denominator = 1;
     pVideoSignalInfo->VSyncFreq.Numerator = RefreshHz;
     pVideoSignalInfo->VSyncFreq.Denominator = 1;
-    pVideoSignalInfo->HSyncFreq.Numerator = (SIZE_T)RefreshHz * pVideoSignalInfo->TotalSize.cy;
-    pVideoSignalInfo->HSyncFreq.Denominator = 1;
-    pVideoSignalInfo->PixelRate = TotalPixels * RefreshHz;
     pVideoSignalInfo->ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE;
 }
 
@@ -3238,12 +3288,123 @@ int VioGpuAdapter::ProcessEdid(void)
     {
         GetEdids();
     }
-    else
-    {
-        FixEdid();
-    }
+
+    SanitizeEdid();
 
     return AddEdidModes();
+}
+
+// Windows validates the monitor descriptor end to end: the 128-byte block has to
+// sum to zero, and the first detailed timing has to be a legal timing with a
+// non-zero blanking interval. The virtual EDID this driver ends up with fails
+// those checks - its built-in DTD has zero vertical blanking, and a scanout this
+// size needs a pixel clock that a 16-bit 10 kHz field cannot hold - so Windows
+// discards it, creates an unidentified "NOEDID" monitor, gets no monitor modes
+// and never activates the output. Rebuild the block from the real scanout
+// geometry instead of trusting whatever the host produced.
+void VioGpuAdapter::SanitizeEdid(void)
+{
+    PAGED_CODE();
+
+    static const UCHAR Header[8] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
+
+    if (!m_bEDID || RtlCompareMemory(m_EDIDs, Header, sizeof(Header)) != sizeof(Header))
+    {
+        RtlCopyMemory(m_EDIDs, g_gpu_edid, EDID_V1_BLOCK_SIZE);
+        RtlCopyMemory(m_EDIDs, Header, sizeof(Header));
+    }
+    m_bEDID = TRUE;
+
+    PUCHAR Edid = m_EDIDs;
+
+    // The active geometry in the DTD survives a truncated pixel clock, so it is
+    // still the best description of the panel. Fall back to the boot scanout when
+    // it is not usable at all.
+    USHORT Width = (USHORT)(Edid[56] | (((USHORT)(Edid[58] >> 4)) << 8));
+    USHORT Height = (USHORT)(Edid[59] | (((USHORT)(Edid[61] >> 4)) << 8));
+    if (Width < MIN_WIDTH_SIZE || Height < MIN_HEIGHT_SIZE || Width > 4095 || Height > 4095)
+    {
+        Width = (USHORT)m_SystemDisplayInfo.Width;
+        Height = (USHORT)m_SystemDisplayInfo.Height;
+    }
+    if (Width < MIN_WIDTH_SIZE || Height < MIN_HEIGHT_SIZE)
+    {
+        Width = NOM_WIDTH_SIZE;
+        Height = NOM_HEIGHT_SIZE;
+    }
+
+    USHORT TotalWidth = 0;
+    USHORT TotalHeight = 0;
+    ULONG PixelClock10kHz = 0;
+    ComputeVioGpuTimings(Width, Height, VIOGPU_REPORTED_REFRESH_HZ, &TotalWidth, &TotalHeight, &PixelClock10kHz);
+
+    const USHORT HBlank = (USHORT)(TotalWidth - Width);
+    const USHORT VBlank = (USHORT)(TotalHeight - Height);
+
+    USHORT HFrontPorch = 48;
+    USHORT HSyncPulse = 32;
+    if (HBlank < (USHORT)(HFrontPorch + HSyncPulse + 16))
+    {
+        HFrontPorch = 8;
+        HSyncPulse = 8;
+    }
+    USHORT VFrontPorch = 3;
+    USHORT VSyncPulse = 6;
+    if (VBlank < (USHORT)(VFrontPorch + VSyncPulse + 4))
+    {
+        VFrontPorch = 1;
+        VSyncPulse = 3;
+    }
+
+    PUCHAR Dtd = Edid + 54;
+    Dtd[0] = (UCHAR)(PixelClock10kHz & 0xFF);
+    Dtd[1] = (UCHAR)(PixelClock10kHz >> 8);
+    Dtd[2] = (UCHAR)(Width & 0xFF);
+    Dtd[3] = (UCHAR)(HBlank & 0xFF);
+    Dtd[4] = (UCHAR)((((Width >> 8) & 0x0F) << 4) | ((HBlank >> 8) & 0x0F));
+    Dtd[5] = (UCHAR)(Height & 0xFF);
+    Dtd[6] = (UCHAR)(VBlank & 0xFF);
+    Dtd[7] = (UCHAR)((((Height >> 8) & 0x0F) << 4) | ((VBlank >> 8) & 0x0F));
+    Dtd[8] = (UCHAR)(HFrontPorch & 0xFF);
+    Dtd[9] = (UCHAR)(HSyncPulse & 0xFF);
+    Dtd[10] = (UCHAR)(((VFrontPorch & 0x0F) << 4) | (VSyncPulse & 0x0F));
+    Dtd[11] = 0;
+    Dtd[12] = (UCHAR)((Width / 10) & 0xFF);
+    Dtd[13] = (UCHAR)((Height / 10) & 0xFF);
+    Dtd[14] = (UCHAR)(((((Width / 10) >> 8) & 0x0F) << 4) | (((Height / 10) >> 8) & 0x0F));
+    Dtd[15] = 0;
+    Dtd[16] = 0;
+    Dtd[17] = 0x1A; // digital separate sync, positive on both axes
+
+    // Range limits keep Windows from discarding the mode for falling outside the
+    // envelope the monitor declares. Horizontal is in kHz, vertical in Hz.
+    PUCHAR Range = Edid + 72;
+    Range[0] = 0;
+    Range[1] = 0;
+    Range[2] = 0;
+    Range[3] = 0xFD;
+    Range[4] = 0;
+    Range[5] = 50;
+    Range[6] = (UCHAR)VIOGPU_REPORTED_REFRESH_HZ;
+    Range[7] = 30;
+    Range[8] = 255;
+    Range[9] = 0;
+    Range[10] = 0x0A;
+    for (int i = 11; i < 18; i++)
+    {
+        Range[i] = 0x20;
+    }
+
+    // No extension block: the host may append a CTA block this code does not describe.
+    Edid[126] = 0;
+
+    UCHAR Sum = 0;
+    Edid[127] = 0;
+    for (ULONG i = 0; i < EDID_V1_BLOCK_SIZE; i++)
+    {
+        Sum = (UCHAR)(Sum + Edid[i]);
+    }
+    Edid[127] = (UCHAR)(0x100 - Sum);
 }
 
 void VioGpuAdapter::FixEdid(void)

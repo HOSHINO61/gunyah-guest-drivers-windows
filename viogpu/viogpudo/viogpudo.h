@@ -162,6 +162,7 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN AckFeature(UINT64 Feature);
     BOOLEAN GetDisplayInfo(void);
     int ProcessEdid(void);
+    void SanitizeEdid(void);
     void FixEdid(void);
     BOOLEAN GetEdids(void);
     int AddEdidModes(void);
