@@ -931,6 +931,9 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     UNREFERENCED_PARAMETER(pVidPnPinnedSourceModeInfo);
+    // SourceId no longer selects the mode; the loop below walks the whole mode
+    // table and the target mode set is per source anyway.
+    UNREFERENCED_PARAMETER(SourceId);
 
     D3DKMDT_VIDPN_TARGET_MODE *pVidPnTargetModeInfo = NULL;
     NTSTATUS Status = STATUS_SUCCESS;
