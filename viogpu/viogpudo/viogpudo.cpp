@@ -48,6 +48,10 @@
 // and never activates the output - which is exactly the black second display.
 #define VIOGPU_REPORTED_REFRESH_HZ 60
 
+// B8G8R8X8 magenta, used only to prove that a freshly activated scanout can
+// actually be seen by the host (see CreateFrameBufferObj).
+#define VIOGPU_BRINGUP_MARKER_COLOR 0xFFFF00FF
+
 // CVT-ish blanking with the horizontal blank 8-pixel aligned. The same numbers
 // feed both the DTD and D3DKMDT_VIDEO_SIGNAL_INFO so the two descriptions of the
 // same mode agree instead of describing two different signals.
@@ -4100,12 +4104,38 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
     }
 
     GpuObjectAttach(resid, obj);
-    m_CtrlQueue.SetScanout(0 /*FIXME m_Id*/, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
-    m_CtrlQueue.TransferToHost2D(resid, 0, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
-    m_CtrlQueue.ResFlush(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
     m_pFrameBuf = obj;
     pCurrentMode->FrameBuffer = obj->GetVirtualAddress();
     pCurrentMode->Flags.FrameBufferIsActive = TRUE;
+
+    // Bring-up marker. The scanout is live but the host window stays black, and
+    // "the guest never drew" and "the guest drew but nothing reached the host"
+    // look identical from the outside. Paint the whole surface an unmistakable
+    // magenta before the first transfer: if the window turns magenta the
+    // attach-backing / transfer-to-host / flush chain works and the desktop is
+    // simply never handed to us, while a still-black window means the chain
+    // itself is broken. The colour is overwritten by the first real present.
+    if (pCurrentMode->FrameBuffer != NULL)
+    {
+        ULONG Stride = pModeInfo->ScreenStride / sizeof(ULONG);
+        if (Stride < pModeInfo->VisScreenWidth)
+        {
+            Stride = pModeInfo->VisScreenWidth;
+        }
+        ULONG *pRow = reinterpret_cast<ULONG *>(pCurrentMode->FrameBuffer);
+        for (ULONG y = 0; y < pModeInfo->VisScreenHeight; y++)
+        {
+            for (ULONG x = 0; x < pModeInfo->VisScreenWidth; x++)
+            {
+                pRow[x] = VIOGPU_BRINGUP_MARKER_COLOR;
+            }
+            pRow += Stride;
+        }
+    }
+
+    m_CtrlQueue.SetScanout(0 /*FIXME m_Id*/, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
+    m_CtrlQueue.TransferToHost2D(resid, 0, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
+    m_CtrlQueue.ResFlush(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return TRUE;
 }
