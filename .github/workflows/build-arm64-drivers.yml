@@ -128,16 +128,27 @@ jobs:
           )
           $failed = @()
           foreach ($j in $jobs) {
+            $name = [IO.Path]::GetFileNameWithoutExtension($j.p)
+            $log = Join-Path $env:RUNNER_TEMP "build-$name.log"
             Write-Host "::group::build $($j.p) [$($j.c)|$($j.plat)]"
-            msbuild $j.p /p:Configuration="$($j.c)" /p:Platform="$($j.plat)" @common
+            msbuild $j.p /p:Configuration="$($j.c)" /p:Platform="$($j.plat)" @common 2>&1 |
+              Tee-Object -FilePath $log
             if ($LASTEXITCODE -ne 0) {
+              # 把真正的編譯/連結錯誤撈成 annotation。先前只看得到「某個 step 失敗」，
+              # 完全不知道是哪個工程、哪一行，只能靠猜。
+              $hits = Select-String -Path $log -Pattern 'error [A-Z]+[0-9]{3,}|error MSB[0-9]{4}|fatal error' |
+                Select-Object -First 12 | ForEach-Object { $_.Line.Trim() }
+              if (-not $hits) { $hits = Get-Content $log -Tail 12 }
+              $msg = (@($hits) -join ' || ')
+              if ($msg.Length -gt 4000) { $msg = $msg.Substring(0, 4000) }
               if ($j.p -like '*viogpu*') {
                 # viogpu 的 InfVerif 在部分 runner 上會因找不到 x86\InfVerif.dll 報錯，
                 # 加上 PackOne 依賴兄弟工程；但 viogpudo.sys / .inf 在這些階段之前就已產出，
                 # 後面的打包階段會自己 Pick，所以這裡降級為 warning。
-                Write-Host "::warning::viogpu 建置尾段失敗（InfVerif/PackOne），driver 本體已產出，繼續"
+                Write-Host "::warning title=viogpu tail failed::$msg"
               } else {
                 $failed += $j.p
+                Write-Host "::error title=build $name failed::$msg"
                 if ($j.dep) { Write-Host "::error::dependency $($j.p) failed — 後續驅動可能連不到" }
               }
             }
