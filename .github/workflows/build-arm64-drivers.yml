@@ -79,8 +79,9 @@ jobs:
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動 -> rdmapool
           # Driver 版號 = 100.6.101.<58000 + 自 versioning epoch 起的 commit 數>。
-          # 維持第三段 101，第四段從 58000 往上長（每 commit +1），epoch 之後第一個 build = 58001，
-          # 故永遠 > 現役 100.6.101.58000。16-bit 上限 65535 → 約 7500 次 build 餘裕；接近上限再開新 epoch。
+          # 維持第三段 101，第四段從 58000 往上長（每 commit +1），epoch 之後第一個 build =
+          # 58001，故永遠 > 現役 100.6.101.58000。16-bit 上限 65535 → 約 7500 次 build 餘裕；
+          # 接近上限再開新 epoch。
           # 對未用 Driver.RHEL.props 的專案（如 rdmapool）此 /p: 是未使用屬性，無副作用。
           # versioning epoch = base commit. 開關：設為空字串 '' 或 $null 即關閉自增，
           # 第四段固定落回 58000（相當於 +0）。設為某個 commit 時，其後每個 commit +1。
@@ -118,6 +119,11 @@ jobs:
             @{ p='viofs/svc/virtiofs.vcxproj';              c='Win11 Release'; plat='ARM64' },
             @{ p='rdmapool/rdmapool.vcxproj';               c='Release';       plat='ARM64' },
             @{ p='pvmpower/pvmpower.vcxproj';               c='Release';       plat='ARM64' },
+            # virtio-gpu：viogpudo 的 PackOne 會去 copy 兄弟工程的產物，
+            # 所以先把 viogpuap / viogpusc / viogpures 編出來，否則 viogpudo 會以 MSB3030 失敗
+            @{ p='viogpu/viogpuap/viogpuap.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
+            @{ p='viogpu/viogpusc/viogpusc.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
+            @{ p='viogpu/viogpures/viogpures.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpudo/viogpudo.vcxproj';        c='Win11 Release'; plat='ARM64' }
           )
           $failed = @()
@@ -126,9 +132,10 @@ jobs:
             msbuild $j.p /p:Configuration="$($j.c)" /p:Platform="$($j.plat)" @common
             if ($LASTEXITCODE -ne 0) {
               if ($j.p -like '*viogpu*') {
-                # viogpu 的 PackOne 會去 copy 未編譯的兄弟工程 (viogpuap/viogpusc/viogpures)，
-                # 導致 MSB3030；但 viogpudo.sys / .inf 在此之前已經產出，後面的打包階段會自己撿
-                Write-Host "::warning::viogpu PackOne 失敗，但 driver 本體已產出，繼續"
+                # viogpu 的 InfVerif 在部分 runner 上會因找不到 x86\InfVerif.dll 報錯，
+                # 加上 PackOne 依賴兄弟工程；但 viogpudo.sys / .inf 在這些階段之前就已產出，
+                # 後面的打包階段會自己 Pick，所以這裡降級為 warning。
+                Write-Host "::warning::viogpu 建置尾段失敗（InfVerif/PackOne），driver 本體已產出，繼續"
               } else {
                 $failed += $j.p
                 if ($j.dep) { Write-Host "::error::dependency $($j.p) failed — 後續驅動可能連不到" }
