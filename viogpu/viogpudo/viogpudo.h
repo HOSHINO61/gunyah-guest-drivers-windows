@@ -161,8 +161,8 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS BuildModeList(DXGK_DISPLAY_INFORMATION *pDispInfo);
     BOOLEAN AckFeature(UINT64 Feature);
     BOOLEAN GetDisplayInfo(void);
-    int ProcessEdid(void);
-    void SanitizeEdid(void);
+    int ProcessEdid(ULONG BootWidth, ULONG BootHeight);
+    void SanitizeEdid(ULONG BootWidth, ULONG BootHeight);
     void FixEdid(void);
     BOOLEAN GetEdids(void);
     int AddEdidModes(void);

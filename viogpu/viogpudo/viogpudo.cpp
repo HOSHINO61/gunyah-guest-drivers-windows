@@ -51,14 +51,14 @@
 // CVT-ish blanking with the horizontal blank 8-pixel aligned. The same numbers
 // feed both the DTD and D3DKMDT_VIDEO_SIGNAL_INFO so the two descriptions of the
 // same mode agree instead of describing two different signals.
-static VOID ComputeVioGpuTimings(USHORT Width,
-                                 USHORT Height,
+static VOID ComputeVioGpuTimings(ULONG Width,
+                                 ULONG Height,
                                  UINT RefreshHz,
                                  USHORT *pTotalWidth,
                                  USHORT *pTotalHeight,
                                  ULONG *pPixelClock10kHz)
 {
-    ULONG HBlank = ((ULONG)Width * 15) / 100;
+    ULONG HBlank = (Width * 15) / 100;
     HBlank = (HBlank + 7) & ~7UL;
     if (HBlank < 160)
     {
@@ -66,8 +66,8 @@ static VOID ComputeVioGpuTimings(USHORT Width,
     }
     const ULONG VBlank = 30;
 
-    ULONG HTotal = (ULONG)Width + HBlank;
-    ULONG VTotal = (ULONG)Height + VBlank;
+    ULONG HTotal = Width + HBlank;
+    ULONG VTotal = Height + VBlank;
     if (HTotal > 4095)
     {
         HTotal = 4095;
@@ -3280,7 +3280,7 @@ BOOLEAN VioGpuAdapter::GetDisplayInfo(void)
     return FALSE;
 }
 
-int VioGpuAdapter::ProcessEdid(void)
+int VioGpuAdapter::ProcessEdid(ULONG BootWidth, ULONG BootHeight)
 {
     PAGED_CODE();
 
@@ -3289,7 +3289,7 @@ int VioGpuAdapter::ProcessEdid(void)
         GetEdids();
     }
 
-    SanitizeEdid();
+    SanitizeEdid(BootWidth, BootHeight);
 
     return AddEdidModes();
 }
@@ -3302,7 +3302,7 @@ int VioGpuAdapter::ProcessEdid(void)
 // discards it, creates an unidentified "NOEDID" monitor, gets no monitor modes
 // and never activates the output. Rebuild the block from the real scanout
 // geometry instead of trusting whatever the host produced.
-void VioGpuAdapter::SanitizeEdid(void)
+void VioGpuAdapter::SanitizeEdid(ULONG BootWidth, ULONG BootHeight)
 {
     PAGED_CODE();
 
@@ -3320,14 +3320,14 @@ void VioGpuAdapter::SanitizeEdid(void)
     // The active geometry in the DTD survives a truncated pixel clock, so it is
     // still the best description of the panel. Fall back to the boot scanout when
     // it is not usable at all.
-    USHORT Width = (USHORT)(Edid[56] | (((USHORT)(Edid[58] >> 4)) << 8));
-    USHORT Height = (USHORT)(Edid[59] | (((USHORT)(Edid[61] >> 4)) << 8));
+    ULONG Width = (ULONG)(Edid[56] | (((USHORT)(Edid[58] >> 4)) << 8));
+    ULONG Height = (ULONG)(Edid[59] | (((USHORT)(Edid[61] >> 4)) << 8));
     if (Width < MIN_WIDTH_SIZE || Height < MIN_HEIGHT_SIZE || Width > 4095 || Height > 4095)
     {
-        Width = (USHORT)m_SystemDisplayInfo.Width;
-        Height = (USHORT)m_SystemDisplayInfo.Height;
+        Width = BootWidth;
+        Height = BootHeight;
     }
-    if (Width < MIN_WIDTH_SIZE || Height < MIN_HEIGHT_SIZE)
+    if (Width < MIN_WIDTH_SIZE || Height < MIN_HEIGHT_SIZE || Width > 4095 || Height > 4095)
     {
         Width = NOM_WIDTH_SIZE;
         Height = NOM_HEIGHT_SIZE;
@@ -3759,7 +3759,7 @@ NTSTATUS VioGpuAdapter::BuildModeList(DXGK_DISPLAY_INFORMATION *pDispInfo)
     m_ModeInfo = NULL;
     m_ModeCount = 0;
 
-    m_ModeCount = ProcessEdid() + 1;
+    m_ModeCount = ProcessEdid(pDispInfo->Width, pDispInfo->Height) + 1;
 
     m_ModeInfo = new (PagedPool) VIDEO_MODE_INFORMATION[m_ModeCount];
     if (!m_ModeInfo)
