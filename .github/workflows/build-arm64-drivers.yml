@@ -257,6 +257,24 @@ jobs:
               & $stampinf -f $infPath -a ARM64 -k 1.15 -d "*" -v "*"
               Write-Host "stampinf -> $($d.n)"
             }
+            # DriverVer 必須每次構建都往前推。stampinf -d "*" -v "*" 只取當天日期 + 專案版本，
+            # 同一天內連續構建會得到完全相同的 DriverVer，此時 pnputil / 裝置管理員會判定
+            # "已是最新驅動" 而跳過重新繫結（INF 沒變、.sys 換了也不認），只能
+            # `pnputil /delete-driver <oem#>.inf /uninstall /force` 卸掉舊包才裝得上。
+            # 把 run number 併進版本第三段，保證每次構建都能原地升級。
+            $infRaw = Get-Content $infPath -Raw
+            if ($infRaw -match '(?m)^DriverVer\s*=\s*([0-9/]+)\s*,\s*([0-9.]+)\s*$') {
+              $dvDate = $Matches[1]
+              $dvPart = $Matches[2].Split('.')
+              if ($dvPart.Count -lt 4) { $dvPart = @($dvPart) + @('0','0','0') }
+              $runNo = if ($env:GITHUB_RUN_NUMBER) { [int]$env:GITHUB_RUN_NUMBER } else { 0 }
+              $dvPart[2] = [string]([int]$dvPart[2] + $runNo)
+              $dvPart[3] = '0'
+              $dvNew = $dvPart[0..3] -join '.'
+              $infRaw = $infRaw -replace '(?m)^DriverVer\s*=.*$', "DriverVer = $dvDate,$dvNew"
+              Set-Content -LiteralPath $infPath -Value $infRaw -NoNewline -Encoding utf8
+              Write-Host "DriverVer -> $dvDate,$dvNew ($($d.n))"
+            }
             # 防呆：替換後仍殘留 INX_* token（代表上面 $inxMap 漏了 token）-> 擋下不簽、build 失敗，
             # 避免再次靜默出貨壞掉的 inf（ServiceBinary 路徑會是壞的、驅動裝不起來）。
             if ((Get-Content $infPath -Raw) -match 'INX_[A-Z_]+') {
