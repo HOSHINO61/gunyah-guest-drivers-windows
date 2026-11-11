@@ -3338,7 +3338,7 @@ int VioGpuAdapter::AddEdidModes(void)
                 USHORT h_active = (USHORT)(detailed_desc->HorizontalActiveLow |
                                            ((USHORT)detailed_desc->horizontalActiveHigh << 8));
                 USHORT v_active = (USHORT)(detailed_desc->VerticalActiveLow |
-                                           ((USHORT)detailed_desc->verticalActiveHigh << 8));
+                                           ((USHORT)detailed_desc->VerticalActiveHigh << 8));
                 DbgPrint(TRACE_LEVEL_INFORMATION,
                          (" Detailed timing: %dx%d\n", h_active, v_active));
                 if (h_active > 0 && v_active > 0)
@@ -3349,6 +3349,8 @@ int VioGpuAdapter::AddEdidModes(void)
             }
             {
                 PEDID_DISPLAY_DESCRIPTOR disp = (PEDID_DISPLAY_DESCRIPTOR)detailed_desc;
+                if (disp->Tag[3] == 0xF7 && disp->Revision == 0xA)
+                {
                     PESTABLISHED_TIMINGS_3 est_timing_3 = (PESTABLISHED_TIMINGS_3)disp->Data;
                     if (est_timing_3->Timing_640x350_85)
                     {
