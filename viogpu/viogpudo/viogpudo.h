@@ -151,6 +151,7 @@ class VioGpuAdapter : IVioGpuPCI
     }
     PBYTE GetEdidData(void);
     PBYTE GetCTA861Data(void);
+    NTSTATUS UpdateChildStatus(BOOLEAN connect);
 
   protected:
   private:
@@ -165,7 +166,6 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN GetEdids(void);
     int AddEdidModes(void);
     BOOLEAN UpdateModes(USHORT xres, USHORT yres, int &cnt);
-    NTSTATUS UpdateChildStatus(BOOLEAN connect);
     void SetCustomDisplay(_In_ USHORT xres, _In_ USHORT yres);
     BOOLEAN CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, CURRENT_MODE *pCurrentMode);
     void DestroyFrameBufferObj(BOOLEAN bReset, BOOLEAN bKeepBuffer);
