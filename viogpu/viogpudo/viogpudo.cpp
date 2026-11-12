@@ -286,6 +286,11 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
 
     DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s ColorFormat = %d\n", __FUNCTION__, m_CurrentMode.DispInfo.ColorFormat));
 
+    // Build the monitor descriptor from the real boot scanout before DXGK
+    // enumerates the child devices; otherwise Windows caches a NOEDID monitor
+    // and this output never leaves the "not active" state.
+    m_pHWDevice->SetBootDisplayGeometry(m_CurrentMode.DispInfo.Width, m_CurrentMode.DispInfo.Height);
+
     *pNumberOfViews = MAX_VIEWS;
     *pNumberOfChildren = MAX_CHILDREN;
     m_Flags.DriverStarted = TRUE;
@@ -512,10 +517,13 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
     {
         return STATUS_GRAPHICS_CHILD_DESCRIPTOR_NOT_SUPPORTED;
     }
-    else if (pDeviceDescriptor->DescriptorOffset < EDID_RAW_BLOCK_SIZE)
+    else if (pDeviceDescriptor->DescriptorOffset < EDID_V1_BLOCK_SIZE)
     {
+        // ExtensionFlag is 0, so there is exactly one 128-byte block. Handing
+        // Windows 256 bytes (EDID_RAW_BLOCK_SIZE) made it expect an extension
+        // block that does not exist and reject the whole descriptor.
         ULONG len = min(pDeviceDescriptor->DescriptorLength,
-                        (EDID_RAW_BLOCK_SIZE - pDeviceDescriptor->DescriptorOffset));
+                        (EDID_V1_BLOCK_SIZE - pDeviceDescriptor->DescriptorOffset));
         RtlCopyMemory(pDeviceDescriptor->DescriptorBuffer, (edid + pDeviceDescriptor->DescriptorOffset), len);
         pDeviceDescriptor->DescriptorLength = len;
         return STATUS_SUCCESS;
@@ -2676,7 +2684,31 @@ PBYTE VioGpuAdapter::GetEdidData()
 {
     PAGED_CODE();
 
-    return m_bEDID ? m_EDIDs : (PBYTE)(g_gpu_edid);
+    // Windows asks for the monitor descriptor during PnP enumeration, which
+    // runs before BuildModeList()/ProcessEdid() and therefore before the first
+    // SanitizeEdid() call. The old fallback returned g_gpu_edid directly:
+    // a 128-byte array whose checksum byte was 0 (invalid) and which is too
+    // small for the EDID_RAW_BLOCK_SIZE (256) copy in QueryDeviceDescriptor.
+    // Windows discarded that descriptor, created a NOEDID monitor, got no
+    // monitor modes and never activated the output. Always serve the
+    // sanitized 256-byte buffer instead, building it on first use.
+    if (!m_bEDID)
+    {
+        SanitizeEdid(NOM_WIDTH_SIZE, NOM_HEIGHT_SIZE);
+    }
+
+    return m_EDIDs;
+}
+
+void VioGpuAdapter::SetBootDisplayGeometry(ULONG Width, ULONG Height)
+{
+    PAGED_CODE();
+
+    // StartDevice knows the real boot scanout. Publish the EDID from there so
+    // the monitor descriptor Windows reads during child enumeration already
+    // describes 3392x2400 instead of the 1024x768 placeholder used by the
+    // lazy fallback in GetEdidData().
+    SanitizeEdid(Width, Height);
 }
 
 PBYTE VioGpuAdapter::GetCTA861Data(void)
@@ -3399,16 +3431,13 @@ void VioGpuAdapter::SanitizeEdid(ULONG BootWidth, ULONG BootHeight)
 
     PUCHAR Edid = m_EDIDs;
 
-    // The active geometry in the DTD survives a truncated pixel clock, so it is
-    // still the best description of the panel. Fall back to the boot scanout when
-    // it is not usable at all.
-    ULONG Width = (ULONG)(Edid[56] | (((USHORT)(Edid[58] >> 4)) << 8));
-    ULONG Height = (ULONG)(Edid[59] | (((USHORT)(Edid[61] >> 4)) << 8));
-    if (Width < MIN_WIDTH_SIZE || Height < MIN_HEIGHT_SIZE || Width > 4095 || Height > 4095)
-    {
-        Width = BootWidth;
-        Height = BootHeight;
-    }
+    // The built-in DTD does not describe this scanout. Decoding its bitfields
+    // yields a "valid" but nonsensical geometry (1074x3120), which used to win
+    // over the real boot size because the sanity check only rejected outliers.
+    // The descriptor then advertised a timing that matched none of the target
+    // modes. The boot scanout is the only authoritative geometry here.
+    ULONG Width = BootWidth;
+    ULONG Height = BootHeight;
     if (Width < MIN_WIDTH_SIZE || Height < MIN_HEIGHT_SIZE || Width > 4095 || Height > 4095)
     {
         Width = NOM_WIDTH_SIZE;

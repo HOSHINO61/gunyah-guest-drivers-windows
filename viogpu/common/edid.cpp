@@ -183,7 +183,7 @@ UCHAR g_gpu_edid[EDID_V1_BLOCK_SIZE] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00,                                           // Number of Extentions
-    0x00                                            // CheckSum
+    0xDF                                            // CheckSum (block sums to zero)
 };
 // clang-format on
 bool GetStandardTimingResolution(PSTANDARD_TIMING_DESCRIPTOR desc, PVIOGPU_DISP_MODE mode)

@@ -156,6 +156,7 @@ class VioGpuAdapter : IVioGpuPCI
     }
     PBYTE GetEdidData(void);
     PBYTE GetCTA861Data(void);
+    void SetBootDisplayGeometry(ULONG Width, ULONG Height);
     NTSTATUS UpdateChildStatus(BOOLEAN connect);
 
   protected:
