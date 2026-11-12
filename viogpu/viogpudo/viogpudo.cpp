@@ -437,6 +437,10 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
     VIOGPU_ASSERT(pChildRelations != NULL);
 
     ULONG ChildRelationsCount = (ChildRelationsSize / sizeof(DXGK_CHILD_DESCRIPTOR)) - 1;
+    if (ChildRelationsCount > MAX_CHILDREN)
+    {
+        ChildRelationsCount = MAX_CHILDREN;
+    }
     VIOGPU_ASSERT(ChildRelationsCount <= MAX_CHILDREN);
 
     for (UINT ChildIndex = 0; ChildIndex < ChildRelationsCount; ++ChildIndex)
@@ -466,6 +470,14 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
         pChildRelations[ChildIndex].ChildUid = ChildIndex;
     }
 
+    // The slot after the last real child is the TypeNone terminator. Do not
+    // rely on the caller having zeroed it: a stray ChildDeviceType there makes
+    // DXGK enumerate phantom outputs and the real target never becomes active.
+    if (ChildRelationsSize >= (ChildRelationsCount + 1) * sizeof(DXGK_CHILD_DESCRIPTOR))
+    {
+        RtlZeroMemory(&pChildRelations[ChildRelationsCount], sizeof(DXGK_CHILD_DESCRIPTOR));
+    }
+
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return STATUS_SUCCESS;
 }
@@ -483,7 +495,14 @@ NTSTATUS VioGpuDod::QueryChildStatus(_Inout_ DXGK_CHILD_STATUS *pChildStatus, _I
     {
         case StatusConnection:
             {
-                pChildStatus->HotPlug.Connected = IsDriverActive();
+                // This is a virtual, wired output: it exists for the whole
+                // lifetime of the VM and the HpdAwareness is AlwaysConnected.
+                // The old code answered IsDriverActive(), but DXGK queries the
+                // child status while enumerating children - before StartDevice
+                // reaches the line that sets DriverStarted - so Windows was
+                // told "no monitor connected", cached that answer and kept the
+                // target permanently "not active". Always report connected.
+                pChildStatus->HotPlug.Connected = TRUE;
                 return STATUS_SUCCESS;
             }
 
