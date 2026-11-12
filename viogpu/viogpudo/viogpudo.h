@@ -78,6 +78,11 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod);
     ~VioGpuAdapter(void);
     NTSTATUS SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode);
+    // Commit a mode Windows asked for even when it is not one of the entries in
+    // the EDID-derived mode list. Without this, CommitVidPn used to succeed
+    // without ever creating a framebuffer, leaving PresentDisplayOnly with no
+    // surface to draw into.
+    NTSTATUS SetCurrentModeForResolution(ULONG Width, ULONG Height, CURRENT_MODE *pCurrentMode);
     ULONG GetModeCount(void)
     {
         return m_ModeCount;

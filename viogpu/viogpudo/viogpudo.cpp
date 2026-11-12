@@ -1870,12 +1870,14 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
     if (NT_SUCCESS(Status))
     {
         pCurrentMode->Flags.FullscreenPresent = TRUE;
+        BOOLEAN bModeMatched = FALSE;
         for (USHORT ModeIndex = 0; ModeIndex < m_pHWDevice->GetModeCount(); ++ModeIndex)
         {
             PVIDEO_MODE_INFORMATION pModeInfo = m_pHWDevice->GetModeInfo(ModeIndex);
             if (pCurrentMode->DispInfo.Width == pModeInfo->VisScreenWidth &&
                 pCurrentMode->DispInfo.Height == pModeInfo->VisScreenHeight)
             {
+                bModeMatched = TRUE;
                 Status = m_pHWDevice->SetCurrentMode(m_pHWDevice->GetModeNumber(ModeIndex), pCurrentMode);
                 if (NT_SUCCESS(Status))
                 {
@@ -1883,6 +1885,20 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
                 }
                 break;
             }
+        }
+
+        // The EDID-derived mode list is only a set of suggestions: Windows is
+        // free to commit a primary surface whose size is not in it (this is
+        // exactly what happens with the 3392x2400 scanout). Returning success
+        // without a framebuffer used to leave the output "connected" but with
+        // FrameBufferIsActive FALSE, so every PresentDisplayOnly was dropped
+        // and the host window stayed black. Commit the requested geometry
+        // directly instead.
+        if (!bModeMatched)
+        {
+            Status = m_pHWDevice->SetCurrentModeForResolution(pCurrentMode->DispInfo.Width,
+                                                              pCurrentMode->DispInfo.Height,
+                                                              pCurrentMode);
         }
     }
 
@@ -2484,6 +2500,42 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
     return STATUS_UNSUCCESSFUL;
 }
 
+NTSTATUS VioGpuAdapter::SetCurrentModeForResolution(ULONG Width, ULONG Height, CURRENT_MODE *pCurrentMode)
+{
+    PAGED_CODE();
+
+    DbgPrint(TRACE_LEVEL_ERROR, ("---> %s - %d: (%lu x %lu)\n", __FUNCTION__, m_Id, Width, Height));
+
+    if (Width < MIN_WIDTH_SIZE || Height < MIN_HEIGHT_SIZE || Width > 8192 || Height > 8192)
+    {
+        return STATUS_GRAPHICS_INVALID_VIDEO_PRESENT_SOURCE_MODE;
+    }
+
+    if (pCurrentMode->Flags.FrameBufferIsActive)
+    {
+        DestroyFrameBufferObj(FALSE, FALSE);
+        pCurrentMode->Flags.FrameBufferIsActive = FALSE;
+    }
+
+    VIDEO_MODE_INFORMATION ModeInfo = {0};
+    ModeInfo.Length = sizeof(ModeInfo);
+    ModeInfo.ModeIndex = 0;
+    ModeInfo.VisScreenWidth = Width;
+    ModeInfo.VisScreenHeight = Height;
+    ModeInfo.ScreenStride = Width * (BPPFromPixelFormat(D3DDDIFMT_X8R8G8B8) / BITS_PER_BYTE);
+
+    if (!CreateFrameBufferObj(&ModeInfo, pCurrentMode))
+    {
+        DbgPrint(TRACE_LEVEL_FATAL,
+                 ("<--- %s failed to create framebuffer for %lu x %lu\n", __FUNCTION__, Width, Height));
+        return STATUS_NO_MEMORY;
+    }
+
+    pCurrentMode->Flags.FullscreenPresent = TRUE;
+    SetCurrentModeIndex(0);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
 {
     PAGED_CODE();
@@ -2802,6 +2854,19 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
 
     req_size = max(req_size, (max_res_size * 4));
 
+    // IsSupportedVidPn rejects any primary surface larger than this segment
+    // with STATUS_NO_MEMORY, which Windows reports as "cannot save display
+    // settings". PrimSurfSize is not necessarily identical to the largest mode we
+    // advertised (Windows may align it), and the segment is ordinary system
+    // memory here anyway - there is no hardware aperture to respect. Keep a
+    // generous slack so a slightly larger commit still succeeds.
+    ULONGLONG slack = (ULONGLONG)req_size + (ULONGLONG)(req_size / 2);
+    if (slack > 0xFFFFFFFFULL)
+    {
+        slack = 0xFFFFFFFFULL;
+    }
+    req_size = (UINT)slack;
+
     if (fb_pa.QuadPart != 0LL)
     {
         pDispInfo->PhysicAddress = fb_pa;
@@ -3000,9 +3065,15 @@ NTSTATUS VioGpuAdapter::ExecutePresentDisplayOnly(_In_ BYTE *DstAddr,
         updrect.bottom = pModeCur->SrcModeHeight;
         updrect.right = pModeCur->SrcModeWidth;
     }
+    // VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D's "offset" is a byte offset into the
+    // resource backing store that the host ADDS to r.x/r.y (it computes
+    // backing + offset + y*stride + x*bpp). The old code pre-computed the
+    // dirty rect's pixel offset here as well, so every non-fullscreen present
+    // read from twice the intended address - usually past the end of the
+    // resource, which the host reads back as black. r.x/r.y already locate
+    // the dirty rectangle; keep the resource base offset at zero.
     // FIXME!!! rotation
-    offset = (updrect.top * pModeCur->DispInfo.Pitch) +
-             (updrect.left * ((DstBitPerPixel + BITS_PER_BYTE - 1) / BITS_PER_BYTE));
+    offset = 0UL;
 
     resid = m_pFrameBuf->GetId();
     DbgPrint(TRACE_LEVEL_VERBOSE,
